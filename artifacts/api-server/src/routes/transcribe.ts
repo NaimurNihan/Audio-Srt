@@ -45,7 +45,7 @@ async function addPunctuation(text: string): Promise<string> {
   if (!llmClient || !text.trim()) return text;
   try {
     const completion = await llmClient.chat.completions.create({
-      model: "llama-3.1-8b-instant",
+      model: "llama-3.3-70b-versatile",
       messages: [
         {
           role: "system",
