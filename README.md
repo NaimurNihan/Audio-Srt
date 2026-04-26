@@ -6,10 +6,10 @@ Upload an audio or video file and get a perfectly timed `.srt` subtitle file —
 
 ## Features
 
-- Upload audio/video files (MP3, WAV, M4A, OGG, WEBM, FLAC, MP4 — up to 25 MB)
+- Upload audio/video files (MP3, WAV, M4A, OGG, WEBM, FLAC, MP4 — up to 30 MB)
 - Choose language or let it auto-detect (supports Bengali, Hindi, English, Arabic, and 12 more)
 - Accurate timestamps using Whisper `whisper-large-v3`
-- Automatic punctuation restoration using LLaMA `llama-3.1-8b-instant`
+- Automatic punctuation restoration using LLaMA `llama-3.3-70b-versatile`
 - Download `.srt` file or copy to clipboard
 
 ---
@@ -21,7 +21,7 @@ Upload an audio or video file and get a perfectly timed `.srt` subtitle file —
 | Frontend | React + Vite + Tailwind CSS + shadcn/ui |
 | Backend | Express 5 + TypeScript |
 | Transcription | Groq Whisper (`whisper-large-v3`) |
-| Punctuation | Groq LLaMA (`llama-3.1-8b-instant`) |
+| Punctuation | Groq LLaMA (`llama-3.3-70b-versatile`) |
 | Audio processing | ffmpeg (transcode to MP3 before sending) |
 | Package manager | pnpm workspaces |
 
@@ -34,7 +34,7 @@ Upload an audio or video file and get a perfectly timed `.srt` subtitle file —
 This single key is used for **two things**:
 
 1. **Audio transcription** — Groq Whisper (`whisper-large-v3`) converts your audio to text with accurate timestamps
-2. **Punctuation restoration** — Groq LLaMA (`llama-3.1-8b-instant`) adds proper punctuation (`.`, `,`, `?`, `!`) to the transcript naturally at sentence boundaries
+2. **Punctuation restoration** — Groq LLaMA (`llama-3.3-70b-versatile`) adds proper punctuation (`.`, `।`, `,`, `?`, `!`) to the transcript naturally at sentence boundaries
 
 **How to get a Groq API key:**
 
@@ -101,7 +101,7 @@ Transcribes an audio file and returns an `.srt` subtitle file.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `audio` | File | Yes | Audio/video file (max 25 MB) |
+| `audio` | File | Yes | Audio/video file (max 30 MB) |
 | `language` | string | No | Language code (e.g. `en`, `bn`, `hi`). Omit for auto-detect. |
 
 **Response:** `text/plain` — raw SRT file content

@@ -12,7 +12,7 @@ Audio to SRT — a pnpm workspace monorepo using TypeScript. Upload an audio fil
 - **TypeScript version**: 5.9
 - **API framework**: Express 5
 - **Transcription**: Groq Whisper (`whisper-large-v3`)
-- **Punctuation LLM**: Groq LLaMA (`llama-3.1-8b-instant`)
+- **Punctuation LLM**: Groq LLaMA (`llama-3.3-70b-versatile`)
 - **Audio processing**: ffmpeg
 - **Build**: esbuild (CJS bundle)
 
