@@ -32,7 +32,7 @@ const transcriptionClient = useGroq
     })
   : new OpenAI({ baseURL: fallbackBaseURL!, apiKey: fallbackApiKey! });
 
-const transcriptionModel = useGroq ? "whisper-large-v3" : "gpt-4o-transcribe";
+const transcriptionModel = useGroq ? "whisper-large-v3-turbo" : "gpt-4o-transcribe";
 
 const llmClient = groqApiKey
   ? new OpenAI({
@@ -102,7 +102,7 @@ async function addPunctuation(text: string): Promise<string> {
   if (!llmClient || !text.trim()) return text;
   try {
     const completion = await llmClient.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
       messages: [
         {
           role: "system",
