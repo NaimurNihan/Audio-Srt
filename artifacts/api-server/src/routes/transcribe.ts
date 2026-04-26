@@ -41,6 +41,63 @@ const llmClient = groqApiKey
     })
   : null;
 
+const PUNCT_CHARS = /[.,!?।॥،؟۔、。！？，：；]/g;
+
+function stripPunct(s: string): string {
+  return s.replace(PUNCT_CHARS, "").trim().toLowerCase();
+}
+
+function fuzzyRemap(originalWords: string[], punctuatedTokens: string[]): string[] {
+  const result: string[] = new Array(originalWords.length);
+  let pi = 0;
+
+  for (let oi = 0; oi < originalWords.length; oi++) {
+    const origClean = stripPunct(originalWords[oi]);
+
+    // Absorb leading standalone punctuation tokens into the previous result word
+    while (pi < punctuatedTokens.length && stripPunct(punctuatedTokens[pi]) === "") {
+      if (oi > 0 && result[oi - 1] !== undefined) {
+        result[oi - 1] = result[oi - 1] + punctuatedTokens[pi].trim();
+      }
+      pi++;
+    }
+
+    if (pi >= punctuatedTokens.length) {
+      result[oi] = originalWords[oi];
+      continue;
+    }
+
+    const punctClean = stripPunct(punctuatedTokens[pi]);
+
+    if (origClean === punctClean || (origClean.length > 1 && punctClean.includes(origClean)) || (punctClean.length > 1 && origClean.includes(punctClean))) {
+      result[oi] = punctuatedTokens[pi];
+      pi++;
+    } else {
+      // No clean match — skip one punctuated token and try next
+      const nextPi = pi + 1;
+      if (nextPi < punctuatedTokens.length && stripPunct(punctuatedTokens[nextPi]) === origClean) {
+        if (result.length > 0 && result[oi - 1] !== undefined) {
+          result[oi - 1] = result[oi - 1] + punctuatedTokens[pi].trim();
+        }
+        result[oi] = punctuatedTokens[nextPi];
+        pi = nextPi + 1;
+      } else {
+        result[oi] = originalWords[oi];
+      }
+    }
+  }
+
+  // Absorb any trailing standalone punctuation into last word
+  while (pi < punctuatedTokens.length) {
+    if (stripPunct(punctuatedTokens[pi]) === "" && result.length > 0) {
+      result[result.length - 1] = result[result.length - 1] + punctuatedTokens[pi].trim();
+    }
+    pi++;
+  }
+
+  return result;
+}
+
 async function addPunctuation(text: string): Promise<string> {
   if (!llmClient || !text.trim()) return text;
   try {
@@ -124,15 +181,17 @@ router.post("/transcribe", upload.single("audio"), async (req, res) => {
     let punctuatedResponse = response;
     if (response.segments && response.segments.length > 0) {
       const segWords = response.segments.map((seg) => seg.text.trim().split(/\s+/).filter(Boolean));
-      const fullText = segWords.map((w) => w.join(" ")).join(" ");
+      const allOriginalWords = segWords.flat();
+      const fullText = allOriginalWords.join(" ");
       const punctuated = await addPunctuation(fullText);
       const punctuatedTokens = punctuated.split(/\s+/).filter(Boolean);
+      const remapped = fuzzyRemap(allOriginalWords, punctuatedTokens);
 
-      let tokenIdx = 0;
+      let wordIdx = 0;
       const newSegments = response.segments.map((seg, i) => {
         const count = segWords[i].length;
-        const taken = punctuatedTokens.slice(tokenIdx, tokenIdx + count).join(" ");
-        tokenIdx += count;
+        const taken = remapped.slice(wordIdx, wordIdx + count).join(" ");
+        wordIdx += count;
         return { ...seg, text: taken || seg.text };
       });
       punctuatedResponse = { ...response, segments: newSegments };
