@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Audio to SRT"
+version = "1.0.0"
+id = "artifacts/audio-to-srt"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 22919
+
+[services.development]
+run = "pnpm --filter @workspace/audio-to-srt run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/audio-to-srt", "run", "build" ]
+publicDir = "artifacts/audio-to-srt/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22919"
+BASE_PATH = "/"
