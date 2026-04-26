@@ -175,6 +175,126 @@ function alignPunctuatedToWords(
 }
 
 type Cue = { start: number; end: number; text: string };
+type SilenceRegion = { start: number; end: number };
+
+const SILENCE_NOISE_DB = -30;
+const SILENCE_MIN_DURATION = 0.15;
+const SNAP_TOLERANCE_SECONDS = 0.35;
+const MIN_CUE_DURATION = 0.4;
+
+function detectSilences(buffer: Buffer): Promise<SilenceRegion[]> {
+  return new Promise((resolve) => {
+    const proc = spawn("ffmpeg", [
+      "-hide_banner",
+      "-nostats",
+      "-i",
+      "pipe:0",
+      "-af",
+      `silencedetect=noise=${SILENCE_NOISE_DB}dB:d=${SILENCE_MIN_DURATION}`,
+      "-f",
+      "null",
+      "-",
+    ]);
+    let stderr = "";
+    proc.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    proc.on("error", () => resolve([]));
+    proc.on("close", () => {
+      try {
+        const starts: number[] = [];
+        const ends: number[] = [];
+        const startRegex = /silence_start:\s*([\d.]+)/g;
+        const endRegex = /silence_end:\s*([\d.]+)/g;
+        let m: RegExpExecArray | null;
+        while ((m = startRegex.exec(stderr)) !== null) starts.push(parseFloat(m[1]));
+        while ((m = endRegex.exec(stderr)) !== null) ends.push(parseFloat(m[1]));
+        const regions: SilenceRegion[] = [];
+        const len = Math.min(starts.length, ends.length);
+        for (let i = 0; i < len; i++) {
+          if (Number.isFinite(starts[i]) && Number.isFinite(ends[i]) && ends[i] > starts[i]) {
+            regions.push({ start: starts[i], end: ends[i] });
+          }
+        }
+        regions.sort((a, b) => a.start - b.start);
+        resolve(regions);
+      } catch {
+        resolve([]);
+      }
+    });
+    proc.stdin.on("error", () => {});
+    proc.stdin.end(buffer);
+  });
+}
+
+function snapCuesToSilence(cues: Cue[], silences: SilenceRegion[]): Cue[] {
+  if (cues.length === 0 || silences.length === 0) return cues;
+
+  const silenceStarts = silences.map((s) => s.start);
+  const silenceEnds = silences.map((s) => s.end);
+
+  const nearest = (target: number, sorted: number[]): number | null => {
+    if (sorted.length === 0) return null;
+    let lo = 0;
+    let hi = sorted.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (sorted[mid] < target) lo = mid + 1;
+      else hi = mid;
+    }
+    const candidates: number[] = [];
+    if (lo < sorted.length) candidates.push(sorted[lo]);
+    if (lo > 0) candidates.push(sorted[lo - 1]);
+    let best: number | null = null;
+    let bestDist = SNAP_TOLERANCE_SECONDS;
+    for (const c of candidates) {
+      const d = Math.abs(c - target);
+      if (d <= bestDist) {
+        bestDist = d;
+        best = c;
+      }
+    }
+    return best;
+  };
+
+  const out: Cue[] = cues.map((c) => ({ ...c }));
+
+  for (let i = 0; i < out.length; i++) {
+    const cur = out[i];
+
+    // Snap end of cue to nearest silence_start (silence begins right after speech)
+    const snapEnd = nearest(cur.end, silenceStarts);
+    if (snapEnd !== null && snapEnd > cur.start + MIN_CUE_DURATION * 0.5) {
+      cur.end = snapEnd;
+    }
+
+    // Snap start (except first cue) to nearest silence_end (speech resumes after silence)
+    if (i > 0) {
+      const prev = out[i - 1];
+      const snapStart = nearest(cur.start, silenceEnds);
+      if (
+        snapStart !== null &&
+        snapStart >= prev.end &&
+        snapStart < cur.end - MIN_CUE_DURATION * 0.5
+      ) {
+        cur.start = snapStart;
+      }
+    }
+  }
+
+  // Repair: enforce ordering, no overlap, minimum duration
+  for (let i = 0; i < out.length; i++) {
+    if (i > 0 && out[i].start < out[i - 1].end) {
+      out[i].start = out[i - 1].end;
+    }
+    if (out[i].end < out[i].start + MIN_CUE_DURATION) {
+      out[i].end = out[i].start + MIN_CUE_DURATION;
+    }
+    // If next cue would now be pushed forward, allow it (next iteration handles it)
+  }
+
+  return out;
+}
 
 function buildCuesFromWords(
   words: WhisperWord[],
@@ -253,7 +373,7 @@ router.post("/transcribe", upload.single("audio"), async (req, res) => {
       type: uploadType,
     });
 
-    const [response, durationSeconds] = await Promise.all([
+    const [response, durationSeconds, silences] = await Promise.all([
       transcriptionClient.audio.transcriptions.create({
         file,
         model: transcriptionModel,
@@ -262,9 +382,12 @@ router.post("/transcribe", upload.single("audio"), async (req, res) => {
         ...(language ? { language } : {}),
       } as Parameters<typeof transcriptionClient.audio.transcriptions.create>[0]) as Promise<WhisperResponse>,
       probeAudioDuration(audioBuffer).catch(() => 0),
+      detectSilences(audioBuffer).catch(() => [] as SilenceRegion[]),
     ]);
 
-    const srt = await buildSrtFromResponse(response, durationSeconds);
+    logger.info({ silenceCount: silences.length, durationSeconds }, "Silence detection complete");
+
+    const srt = await buildSrtFromResponse(response, durationSeconds, silences);
 
     const safeBase = originalName.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9_-]/g, "_") || "transcript";
     res.setHeader("Content-Type", "application/x-subrip; charset=utf-8");
@@ -280,6 +403,7 @@ router.post("/transcribe", upload.single("audio"), async (req, res) => {
 async function buildSrtFromResponse(
   response: WhisperResponse,
   durationSeconds: number,
+  silences: SilenceRegion[] = [],
 ): Promise<string> {
   // Best path: word-level timestamps + chunked punctuation → real sentence cues
   if (response.words && response.words.length > 0) {
@@ -287,7 +411,10 @@ async function buildSrtFromResponse(
     const punctuatedTokens = await punctuateInChunks(originalWords);
     const aligned = alignPunctuatedToWords(originalWords, punctuatedTokens);
     const cues = buildCuesFromWords(response.words, aligned);
-    if (cues.length > 0) return formatCuesAsSrt(cues);
+    if (cues.length > 0) {
+      const snapped = snapCuesToSilence(cues, silences);
+      return formatCuesAsSrt(snapped);
+    }
   }
 
   // Fallback: segment-level (older/no-word case)
@@ -304,7 +431,8 @@ async function buildSrtFromResponse(
       wordIdx += count;
       return { start: seg.start, end: seg.end, text };
     });
-    return formatCuesAsSrt(cues);
+    const snapped = snapCuesToSilence(cues, silences);
+    return formatCuesAsSrt(snapped);
   }
 
   // Last resort: only plain text — distribute time proportionally
