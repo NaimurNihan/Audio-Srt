@@ -42,60 +42,20 @@ const llmClient = groqApiKey
   : null;
 
 const PUNCT_CHARS = /[.,!?।॥،؟۔、。！？，：；]/g;
+const SENTENCE_END = /[.!?।॥؟。！？]/;
+const MAX_CHARS_PER_CUE = 90;
+const PUNCT_CHUNK_WORDS = 350;
+
+type WhisperWord = { word: string; start: number; end: number };
+type WhisperSegment = { start: number; end: number; text: string };
+type WhisperResponse = {
+  text?: string;
+  segments?: WhisperSegment[];
+  words?: WhisperWord[];
+};
 
 function stripPunct(s: string): string {
   return s.replace(PUNCT_CHARS, "").trim().toLowerCase();
-}
-
-function fuzzyRemap(originalWords: string[], punctuatedTokens: string[]): string[] {
-  const result: string[] = new Array(originalWords.length);
-  let pi = 0;
-
-  for (let oi = 0; oi < originalWords.length; oi++) {
-    const origClean = stripPunct(originalWords[oi]);
-
-    // Absorb leading standalone punctuation tokens into the previous result word
-    while (pi < punctuatedTokens.length && stripPunct(punctuatedTokens[pi]) === "") {
-      if (oi > 0 && result[oi - 1] !== undefined) {
-        result[oi - 1] = result[oi - 1] + punctuatedTokens[pi].trim();
-      }
-      pi++;
-    }
-
-    if (pi >= punctuatedTokens.length) {
-      result[oi] = originalWords[oi];
-      continue;
-    }
-
-    const punctClean = stripPunct(punctuatedTokens[pi]);
-
-    if (origClean === punctClean || (origClean.length > 1 && punctClean.includes(origClean)) || (punctClean.length > 1 && origClean.includes(punctClean))) {
-      result[oi] = punctuatedTokens[pi];
-      pi++;
-    } else {
-      // No clean match — skip one punctuated token and try next
-      const nextPi = pi + 1;
-      if (nextPi < punctuatedTokens.length && stripPunct(punctuatedTokens[nextPi]) === origClean) {
-        if (result.length > 0 && result[oi - 1] !== undefined) {
-          result[oi - 1] = result[oi - 1] + punctuatedTokens[pi].trim();
-        }
-        result[oi] = punctuatedTokens[nextPi];
-        pi = nextPi + 1;
-      } else {
-        result[oi] = originalWords[oi];
-      }
-    }
-  }
-
-  // Absorb any trailing standalone punctuation into last word
-  while (pi < punctuatedTokens.length) {
-    if (stripPunct(punctuatedTokens[pi]) === "" && result.length > 0) {
-      result[result.length - 1] = result[result.length - 1] + punctuatedTokens[pi].trim();
-    }
-    pi++;
-  }
-
-  return result;
 }
 
 async function addPunctuation(text: string): Promise<string> {
@@ -116,7 +76,8 @@ RULES:
 - For exclamations: always end with !
 - A comma must NEVER appear at the end of a complete sentence — only . or । or ? or ! ends a sentence.
 - Names, brand names, English words already in Latin script must stay exactly as they are.
-- Output the full text as one continuous paragraph with no line breaks, no numbering, no explanation.`,
+- Output the full text as one continuous paragraph with no line breaks, no numbering, no explanation.
+- You MUST return every single word from the input. Never truncate, summarize, or omit any portion of the text.`,
         },
         {
           role: "user",
@@ -131,6 +92,129 @@ RULES:
     logger.warn({ err }, "Punctuation LLM call failed; using original text");
     return text;
   }
+}
+
+async function punctuateInChunks(words: string[]): Promise<string[]> {
+  if (words.length === 0) return [];
+  const chunks: string[][] = [];
+  for (let i = 0; i < words.length; i += PUNCT_CHUNK_WORDS) {
+    chunks.push(words.slice(i, i + PUNCT_CHUNK_WORDS));
+  }
+  const results = await Promise.all(
+    chunks.map((chunk) => addPunctuation(chunk.join(" "))),
+  );
+  return results.flatMap((r) => r.split(/\s+/).filter(Boolean));
+}
+
+function alignPunctuatedToWords(
+  originalWords: string[],
+  punctuatedTokens: string[],
+): string[] {
+  const aligned: string[] = new Array(originalWords.length);
+  let pi = 0;
+
+  for (let oi = 0; oi < originalWords.length; oi++) {
+    const origClean = stripPunct(originalWords[oi]);
+
+    while (pi < punctuatedTokens.length && stripPunct(punctuatedTokens[pi]) === "") {
+      if (oi > 0 && aligned[oi - 1] !== undefined) {
+        aligned[oi - 1] = aligned[oi - 1] + punctuatedTokens[pi].trim();
+      }
+      pi++;
+    }
+
+    if (pi >= punctuatedTokens.length) {
+      aligned[oi] = originalWords[oi];
+      continue;
+    }
+
+    const punctClean = stripPunct(punctuatedTokens[pi]);
+
+    const isMatch =
+      origClean === punctClean ||
+      (origClean.length > 1 && punctClean.includes(origClean)) ||
+      (punctClean.length > 1 && origClean.includes(punctClean));
+
+    if (isMatch) {
+      aligned[oi] = punctuatedTokens[pi];
+      pi++;
+    } else {
+      // Look ahead a few tokens; LLM may have inserted/altered a word
+      let found = -1;
+      for (let look = pi + 1; look < Math.min(pi + 4, punctuatedTokens.length); look++) {
+        if (stripPunct(punctuatedTokens[look]) === origClean) {
+          found = look;
+          break;
+        }
+      }
+      if (found !== -1) {
+        if (oi > 0 && aligned[oi - 1] !== undefined) {
+          for (let k = pi; k < found; k++) {
+            aligned[oi - 1] = aligned[oi - 1] + punctuatedTokens[k].trim();
+          }
+        }
+        aligned[oi] = punctuatedTokens[found];
+        pi = found + 1;
+      } else {
+        aligned[oi] = originalWords[oi];
+      }
+    }
+  }
+
+  while (pi < punctuatedTokens.length) {
+    if (stripPunct(punctuatedTokens[pi]) === "" && aligned.length > 0) {
+      aligned[aligned.length - 1] = aligned[aligned.length - 1] + punctuatedTokens[pi].trim();
+    }
+    pi++;
+  }
+
+  return aligned;
+}
+
+type Cue = { start: number; end: number; text: string };
+
+function buildCuesFromWords(
+  words: WhisperWord[],
+  punctuatedWords: string[],
+): Cue[] {
+  if (words.length === 0) return [];
+
+  const cues: Cue[] = [];
+  let bufStart = words[0].start;
+  let bufEnd = words[0].end;
+  let bufText = "";
+  let bufCharCount = 0;
+
+  const flush = () => {
+    const text = bufText.trim();
+    if (text) {
+      cues.push({ start: bufStart, end: bufEnd, text });
+    }
+    bufText = "";
+    bufCharCount = 0;
+  };
+
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    const display = punctuatedWords[i] ?? w.word.trim();
+
+    if (bufText === "") {
+      bufStart = w.start;
+    }
+    bufEnd = w.end;
+    bufText = bufText ? `${bufText} ${display}` : display;
+    bufCharCount = bufText.length;
+
+    const endsSentence = SENTENCE_END.test(display.slice(-1));
+    const tooLong = bufCharCount >= MAX_CHARS_PER_CUE;
+    const isLast = i === words.length - 1;
+
+    if (endsSentence || tooLong || isLast) {
+      flush();
+    }
+  }
+
+  return cues;
 }
 
 router.post("/transcribe", upload.single("audio"), async (req, res) => {
@@ -171,38 +255,13 @@ router.post("/transcribe", upload.single("audio"), async (req, res) => {
         file,
         model: transcriptionModel,
         response_format: useGroq ? "verbose_json" : "json",
-        ...(useGroq ? { timestamp_granularities: ["segment"] } : {}),
+        ...(useGroq ? { timestamp_granularities: ["word", "segment"] } : {}),
         ...(language ? { language } : {}),
-      } as Parameters<typeof transcriptionClient.audio.transcriptions.create>[0]) as Promise<{
-        text?: string;
-        segments?: Array<{ start: number; end: number; text: string }>;
-      }>,
+      } as Parameters<typeof transcriptionClient.audio.transcriptions.create>[0]) as Promise<WhisperResponse>,
       probeAudioDuration(audioBuffer).catch(() => 0),
     ]);
 
-    let punctuatedResponse = response;
-    if (response.segments && response.segments.length > 0) {
-      const segWords = response.segments.map((seg) => seg.text.trim().split(/\s+/).filter(Boolean));
-      const allOriginalWords = segWords.flat();
-      const fullText = allOriginalWords.join(" ");
-      const punctuated = await addPunctuation(fullText);
-      const punctuatedTokens = punctuated.split(/\s+/).filter(Boolean);
-      const remapped = fuzzyRemap(allOriginalWords, punctuatedTokens);
-
-      let wordIdx = 0;
-      const newSegments = response.segments.map((seg, i) => {
-        const count = segWords[i].length;
-        const taken = remapped.slice(wordIdx, wordIdx + count).join(" ");
-        wordIdx += count;
-        return { ...seg, text: taken || seg.text };
-      });
-      punctuatedResponse = { ...response, segments: newSegments };
-    } else if (response.text) {
-      const punctuated = await addPunctuation(response.text);
-      punctuatedResponse = { ...response, text: punctuated };
-    }
-
-    const srt = buildSrt(punctuatedResponse, durationSeconds);
+    const srt = await buildSrtFromResponse(response, durationSeconds);
 
     const safeBase = originalName.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9_-]/g, "_") || "transcript";
     res.setHeader("Content-Type", "application/x-subrip; charset=utf-8");
@@ -214,6 +273,67 @@ router.post("/transcribe", upload.single("audio"), async (req, res) => {
     return res.status(500).json({ error: message });
   }
 });
+
+async function buildSrtFromResponse(
+  response: WhisperResponse,
+  durationSeconds: number,
+): Promise<string> {
+  // Best path: word-level timestamps + chunked punctuation → real sentence cues
+  if (response.words && response.words.length > 0) {
+    const originalWords = response.words.map((w) => w.word.trim()).filter(Boolean);
+    const punctuatedTokens = await punctuateInChunks(originalWords);
+    const aligned = alignPunctuatedToWords(originalWords, punctuatedTokens);
+    const cues = buildCuesFromWords(response.words, aligned);
+    if (cues.length > 0) return formatCuesAsSrt(cues);
+  }
+
+  // Fallback: segment-level (older/no-word case)
+  if (response.segments && response.segments.length > 0) {
+    const segWords = response.segments.map((seg) => seg.text.trim().split(/\s+/).filter(Boolean));
+    const allWords = segWords.flat();
+    const punctuatedTokens = await punctuateInChunks(allWords);
+    const aligned = alignPunctuatedToWords(allWords, punctuatedTokens);
+
+    let wordIdx = 0;
+    const cues: Cue[] = response.segments.map((seg, i) => {
+      const count = segWords[i].length;
+      const text = aligned.slice(wordIdx, wordIdx + count).join(" ").trim() || seg.text.trim();
+      wordIdx += count;
+      return { start: seg.start, end: seg.end, text };
+    });
+    return formatCuesAsSrt(cues);
+  }
+
+  // Last resort: only plain text — distribute time proportionally
+  const text = (response.text ?? "").trim();
+  if (!text) {
+    return "1\n00:00:00,000 --> 00:00:01,000\n[no speech detected]\n";
+  }
+  const punctuated = await addPunctuation(text);
+  const chunks = chunkSentences(punctuated);
+  const totalChars = chunks.reduce((sum, c) => sum + c.length, 0) || 1;
+  const total = durationSeconds && durationSeconds > 0 ? durationSeconds : Math.max(2, chunks.length * 2.5);
+  let cursor = 0;
+  const cues: Cue[] = chunks.map((c) => {
+    const share = (c.length / totalChars) * total;
+    const start = cursor;
+    const end = Math.min(total, cursor + share);
+    cursor = end;
+    return { start, end, text: c };
+  });
+  return formatCuesAsSrt(cues);
+}
+
+function formatCuesAsSrt(cues: Cue[]): string {
+  const lines: string[] = [];
+  cues.forEach((cue, idx) => {
+    lines.push(String(idx + 1));
+    lines.push(`${formatTimestamp(cue.start)} --> ${formatTimestamp(cue.end)}`);
+    lines.push(cue.text.trim());
+    lines.push("");
+  });
+  return lines.join("\n");
+}
 
 function transcodeToMp3(buffer: Buffer): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -307,7 +427,7 @@ function formatTimestamp(totalSeconds: number): string {
   return `${pad(hours)}:${pad(minutes)}:${pad(seconds)},${pad(millis, 3)}`;
 }
 
-function chunkSentences(text: string, maxCharsPerCue = 90): string[] {
+function chunkSentences(text: string, maxCharsPerCue = MAX_CHARS_PER_CUE): string[] {
   const cleaned = text.replace(/\s+/g, " ").trim();
   if (!cleaned) return [];
 
@@ -334,52 +454,6 @@ function chunkSentences(text: string, maxCharsPerCue = 90): string[] {
     if (buffer) cues.push(buffer);
   }
   return cues;
-}
-
-function buildSrt(
-  response: {
-    text?: string;
-    segments?: Array<{ start: number; end: number; text: string }>;
-  },
-  durationSeconds: number,
-): string {
-  const lines: string[] = [];
-
-  if (response.segments && response.segments.length > 0) {
-    response.segments.forEach((seg, idx) => {
-      lines.push(String(idx + 1));
-      lines.push(`${formatTimestamp(seg.start)} --> ${formatTimestamp(seg.end)}`);
-      lines.push(seg.text.trim());
-      lines.push("");
-    });
-    return lines.join("\n");
-  }
-
-  const text = (response.text ?? "").trim();
-  if (!text) {
-    return "1\n00:00:00,000 --> 00:00:01,000\n[no speech detected]\n";
-  }
-
-  const cues = chunkSentences(text);
-  const totalChars = cues.reduce((sum, cue) => sum + cue.length, 0) || 1;
-  const total =
-    durationSeconds && Number.isFinite(durationSeconds) && durationSeconds > 0
-      ? durationSeconds
-      : Math.max(2, cues.length * 2.5);
-
-  let cursor = 0;
-  cues.forEach((cue, idx) => {
-    const share = (cue.length / totalChars) * total;
-    const start = cursor;
-    const end = Math.min(total, cursor + share);
-    cursor = end;
-    lines.push(String(idx + 1));
-    lines.push(`${formatTimestamp(start)} --> ${formatTimestamp(end)}`);
-    lines.push(cue);
-    lines.push("");
-  });
-
-  return lines.join("\n");
 }
 
 export default router;

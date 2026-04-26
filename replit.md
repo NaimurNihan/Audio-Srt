@@ -41,7 +41,10 @@ Audio to SRT — a pnpm workspace monorepo using TypeScript. Upload an audio fil
 
 1. Audio uploaded via `POST /api/transcribe`
 2. ffmpeg transcodes to mono 16kHz MP3
-3. Groq Whisper returns transcript with timestamps (segments)
-4. Full transcript text sent to Groq LLaMA for punctuation restoration
-5. Punctuated tokens mapped back to original segments (timestamps preserved)
-6. SRT file returned as response
+3. Groq Whisper returns transcript with **word-level + segment-level** timestamps
+4. Original words are split into ~350-word chunks and sent to Groq LLaMA in **parallel** for punctuation (avoids LLM output truncation on long transcripts)
+5. Punctuated tokens are aligned back to the original word stream (with look-ahead fuzzy matching)
+6. Cues are built per **sentence boundary** (`.`, `!`, `?`, `।`, `॥`) using actual word timestamps, with a 90-char cap to keep cues readable
+7. SRT file returned as response
+
+Fallback chain: word timestamps → segment timestamps → plain text proportional split.
