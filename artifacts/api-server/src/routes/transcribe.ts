@@ -155,7 +155,10 @@ router.post("/transcribe", upload.single("audio"), async (req, res) => {
     } catch (transcodeErr) {
       logger.warn({ err: transcodeErr }, "ffmpeg transcode failed; sending original file");
       audioBuffer = req.file.buffer;
-      uploadName = originalName;
+      const extMatch = originalName.match(/\.([^/.]+)$/);
+      const lowerExt = extMatch ? extMatch[1].toLowerCase() : "mp3";
+      const baseName = originalName.replace(/\.[^/.]+$/, "") || "audio";
+      uploadName = `${baseName}.${lowerExt}`;
       uploadType = req.file.mimetype || "application/octet-stream";
     }
 
