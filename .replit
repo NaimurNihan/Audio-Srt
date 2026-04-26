@@ -24,13 +24,13 @@ args = "Start application"
 name = "Start application"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "pnpm -r --parallel --filter @workspace/api-server --filter @workspace/audio-to-srt run dev"
-waitForPort = 8080
-
 [workflows.workflow.metadata]
 outputType = "webview"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "(PORT=8080 pnpm --filter @workspace/api-server run dev) & (PORT=22919 BASE_PATH=/ pnpm --filter @workspace/audio-to-srt run dev) & wait"
+waitForPort = 22919
 
 [agent]
 stack = "PNPM_WORKSPACE"
