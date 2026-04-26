@@ -32,7 +32,10 @@ const transcriptionClient = useGroq
     })
   : new OpenAI({ baseURL: fallbackBaseURL!, apiKey: fallbackApiKey! });
 
-const transcriptionModel = useGroq ? "whisper-large-v3-turbo" : "gpt-4o-transcribe";
+// NOTE: whisper-large-v3-turbo does NOT support word-level timestamps on Groq.
+// We use whisper-large-v3 specifically because it returns per-word timing, which
+// is required to build accurate sentence-aligned subtitle cues.
+const transcriptionModel = useGroq ? "whisper-large-v3" : "gpt-4o-transcribe";
 
 const llmClient = groqApiKey
   ? new OpenAI({
