@@ -39,7 +39,7 @@ const LANGUAGES = [
   { value: "zh", label: "Chinese" },
 ];
 
-const MAX_BYTES = 25 * 1024 * 1024;
+const MAX_BYTES = 30 * 1024 * 1024;
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -71,7 +71,7 @@ export default function Home() {
     if (f.size > MAX_BYTES) {
       toast({
         title: "File too large",
-        description: `Max size is 25 MB. Your file is ${formatBytes(f.size)}.`,
+        description: `Max size is 30 MB. Your file is ${formatBytes(f.size)}.`,
         variant: "destructive",
       });
       return;
@@ -232,7 +232,7 @@ export default function Home() {
                     </div>
                     <p className="font-medium">Click to upload or drag and drop</p>
                     <p className="text-sm text-muted-foreground mt-1">
-                      MP3, WAV, M4A, OGG, WEBM, FLAC, MP4 — up to 25 MB
+                      MP3, WAV, M4A, OGG, WEBM, FLAC, MP4 — up to 30 MB
                     </p>
                   </div>
                 )}
