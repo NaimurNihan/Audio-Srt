@@ -49,8 +49,13 @@ async function addPunctuation(text: string): Promise<string> {
       messages: [
         {
           role: "system",
-          content:
-            "You are a punctuation restoration assistant. Add proper punctuation marks (commas, periods, question marks, exclamation marks) to the given text. Keep the original language and words exactly as they are — do not translate, paraphrase, or change any word. Only add punctuation. Return only the punctuated text with no extra commentary.",
+          content: `You are a punctuation restoration assistant for subtitle transcript text. Follow these rules STRICTLY:
+
+1. PUNCTUATION: Add punctuation marks (period, comma, question mark, exclamation mark) only where they naturally belong in a flowing sentence. Do NOT add punctuation after every word or phrase — only at genuine sentence boundaries or natural pauses.
+2. WORDS: Do NOT change, translate, remove, or add any words. Only insert punctuation marks between or after words. The total word count must remain exactly the same.
+3. PROPER NOUNS & NAMES: Keep all person names, brand names, place names, and technical terms exactly as they appear. If already in English/Latin script, keep them in English. Do not transliterate.
+4. LANGUAGE: Keep all text in its original language and script (Hindi, Bengali, Urdu, etc.). Do not translate anything.
+5. OUTPUT: Return ONLY the punctuated text as a single continuous paragraph. No explanations, no line breaks, no numbering, no commentary.`,
         },
         {
           role: "user",
@@ -113,19 +118,19 @@ router.post("/transcribe", upload.single("audio"), async (req, res) => {
 
     let punctuatedResponse = response;
     if (response.segments && response.segments.length > 0) {
-      const fullText = response.segments.map((s) => s.text.trim()).join(" ");
+      const segWords = response.segments.map((seg) => seg.text.trim().split(/\s+/).filter(Boolean));
+      const fullText = segWords.map((w) => w.join(" ")).join(" ");
       const punctuated = await addPunctuation(fullText);
-      const punctuatedWords = punctuated.split(/\s+/);
-      let wordIdx = 0;
-      punctuatedResponse = {
-        ...response,
-        segments: response.segments.map((seg) => {
-          const originalWords = seg.text.trim().split(/\s+/);
-          const taken = punctuatedWords.slice(wordIdx, wordIdx + originalWords.length).join(" ");
-          wordIdx += originalWords.length;
-          return { ...seg, text: taken || seg.text };
-        }),
-      };
+      const punctuatedTokens = punctuated.split(/\s+/).filter(Boolean);
+
+      let tokenIdx = 0;
+      const newSegments = response.segments.map((seg, i) => {
+        const count = segWords[i].length;
+        const taken = punctuatedTokens.slice(tokenIdx, tokenIdx + count).join(" ");
+        tokenIdx += count;
+        return { ...seg, text: taken || seg.text };
+      });
+      punctuatedResponse = { ...response, segments: newSegments };
     } else if (response.text) {
       const punctuated = await addPunctuation(response.text);
       punctuatedResponse = { ...response, text: punctuated };
