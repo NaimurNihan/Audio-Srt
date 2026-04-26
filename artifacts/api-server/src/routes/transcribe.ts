@@ -34,6 +34,39 @@ const transcriptionClient = useGroq
 
 const transcriptionModel = useGroq ? "whisper-large-v3" : "gpt-4o-transcribe";
 
+const llmClient = groqApiKey
+  ? new OpenAI({
+      baseURL: "https://api.groq.com/openai/v1",
+      apiKey: groqApiKey,
+    })
+  : null;
+
+async function addPunctuation(text: string): Promise<string> {
+  if (!llmClient || !text.trim()) return text;
+  try {
+    const completion = await llmClient.chat.completions.create({
+      model: "llama-3.1-8b-instant",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a punctuation restoration assistant. Add proper punctuation marks (commas, periods, question marks, exclamation marks) to the given text. Keep the original language and words exactly as they are — do not translate, paraphrase, or change any word. Only add punctuation. Return only the punctuated text with no extra commentary.",
+        },
+        {
+          role: "user",
+          content: text,
+        },
+      ],
+      temperature: 0.1,
+      max_tokens: 2048,
+    });
+    return completion.choices[0]?.message?.content?.trim() ?? text;
+  } catch (err) {
+    logger.warn({ err }, "Punctuation LLM call failed; using original text");
+    return text;
+  }
+}
+
 router.post("/transcribe", upload.single("audio"), async (req, res) => {
   try {
     if (!req.file) {
@@ -78,7 +111,27 @@ router.post("/transcribe", upload.single("audio"), async (req, res) => {
       probeAudioDuration(audioBuffer).catch(() => 0),
     ]);
 
-    const srt = buildSrt(response, durationSeconds);
+    let punctuatedResponse = response;
+    if (response.segments && response.segments.length > 0) {
+      const fullText = response.segments.map((s) => s.text.trim()).join(" ");
+      const punctuated = await addPunctuation(fullText);
+      const punctuatedWords = punctuated.split(/\s+/);
+      let wordIdx = 0;
+      punctuatedResponse = {
+        ...response,
+        segments: response.segments.map((seg) => {
+          const originalWords = seg.text.trim().split(/\s+/);
+          const taken = punctuatedWords.slice(wordIdx, wordIdx + originalWords.length).join(" ");
+          wordIdx += originalWords.length;
+          return { ...seg, text: taken || seg.text };
+        }),
+      };
+    } else if (response.text) {
+      const punctuated = await addPunctuation(response.text);
+      punctuatedResponse = { ...response, text: punctuated };
+    }
+
+    const srt = buildSrt(punctuatedResponse, durationSeconds);
 
     const safeBase = originalName.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9_-]/g, "_") || "transcript";
     res.setHeader("Content-Type", "application/x-subrip; charset=utf-8");
